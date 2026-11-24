@@ -431,6 +431,77 @@ describe("close_topic：结论", () => {
       expect(assistantItems.map((item) => item.text)).toEqual(["问题已经处理完，我现在关闭这个话题。"]);
     } finally { hob.close(); }
   });
+
+  it("话题内指定其他话题时只关闭目标，不终止当前回合", async () => {
+    const { hob, group } = setup();
+    try {
+      const current = hob.runtime.groups.createTopic(group.id, "当前话题", "user");
+      const other = hob.runtime.groups.createTopic(group.id, "另一个话题", "user");
+      const result = await toolOf(hob, "close_topic", current.id).execute("c", { topic: other.id, note: "另一个话题已完成" });
+      expect(isError(result)).toBe(false);
+      expect((result as { terminate?: boolean }).terminate).not.toBe(true);
+      expect(hob.runtime.store.group(current.id)?.closedAt).toBeUndefined();
+      expect(hob.runtime.store.group(other.id)?.closedAt).toBeTruthy();
+    } finally { hob.close(); }
+  });
+
+  it("综合里无效或已关闭的话题 id 不会误终止综合回合", async () => {
+    const { hob, group } = setup();
+    try {
+      const invalid = await toolOf(hob, "close_topic", group.id).execute("c", { topic: "g-missing", note: "不存在" });
+      expect(isError(invalid)).toBe(true);
+      expect(textOf(invalid)).toContain("不是这个群的话题");
+
+      const closed = hob.runtime.groups.createTopic(group.id, "已经关闭", "user");
+      hob.runtime.groups.closeByUser(closed.id, "之前已完成");
+      const repeated = await toolOf(hob, "close_topic", group.id).execute("c", { topic: closed.id, note: "再次确认" });
+      expect(isError(repeated)).toBe(false);
+      expect((repeated as { terminate?: boolean }).terminate).not.toBe(true);
+      expect(hob.runtime.store.group(closed.id)?.closedAt).toBeTruthy();
+    } finally { hob.close(); }
+  });
+
+  it("综合里关闭指定话题后继续当前回合", async () => {
+    const { hob, group } = setup();
+    try {
+      const topic = hob.runtime.groups.createTopic(group.id, "待关闭话题", "user");
+      hob.faux.setResponses([
+        fauxAssistantMessage([fauxToolCall("close_topic", { topic: topic.id, note: "已完成" })], { stopReason: "toolUse" }),
+        text("综合里的其他事情继续处理。"),
+      ]);
+      await hob.runtime.groups.send(group.id, { text: "关掉这个话题后继续回复" });
+      await hob.runtime.router.waitIdle("hob", 10_000, group.id);
+
+      expect(hob.faux.state.callCount).toBe(2);
+      expect(hob.runtime.groups.summary(topic.id).closedAt).toBeTruthy();
+      expect(hob.runtime.groups.items(group.id).items.filter((item) => item.kind === "assistant").map((item) => item.text)).toEqual(["综合里的其他事情继续处理。"]);
+    } finally { hob.close(); }
+  });
+
+  it("同一批里关闭当前话题并调用其他工具时，其他工具执行后再继续一轮", async () => {
+    const { hob, group } = setup();
+    try {
+      const topic = hob.runtime.groups.createTopic(group.id, "并行工具", "user");
+      hob.faux.setResponses([
+        fauxAssistantMessage(
+          [
+            fauxToolCall("close_topic", { note: "已完成" }),
+            fauxToolCall("show_group", { groupId: topic.id }),
+          ],
+          { stopReason: "toolUse" },
+        ),
+        text("其他工具已经执行，继续收尾。"),
+      ]);
+      await hob.runtime.groups.send(topic.id, { text: "关闭话题并查看状态" });
+      await hob.runtime.router.waitIdle("hob", 10_000, topic.id);
+
+      expect(hob.faux.state.callCount).toBe(2);
+      const session = await hob.runtime.router.ensure("hob", topic.id);
+      expect(session.session?.messages.some((message) => message.role === "toolResult" && message.toolName === "show_group" && !message.isError)).toBe(true);
+      expect(hob.runtime.groups.summary(topic.id).closedAt).toBeTruthy();
+      expect(hob.runtime.groups.items(topic.id).items.filter((item) => item.kind === "assistant").map((item) => item.text)).toEqual(["其他工具已经执行，继续收尾。"]);
+    } finally { hob.close(); }
+  });
 });
 
 describe("工具和提示词按话题会话分开", () => {
@@ -442,6 +513,7 @@ describe("工具和提示词按话题会话分开", () => {
       expect(names).toContain("close_topic");
       expect(names).toContain("update_todos");
       for (const name of ["write_brief", "plan_todos", "start_todos"]) expect(names).not.toContain(name);
+      expect(buildRouterTools(hob.runtime, "hob").map((tool) => tool.name)).not.toContain("close_topic");
 
       const shown = prompt(hob, "hob", group);
       expect(shown).toContain(TOPIC_OPEN_LINE);
