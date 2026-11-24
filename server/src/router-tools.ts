@@ -998,6 +998,7 @@ export function buildRouterTools(runtime: HobRuntime, assistantId: string, group
         const topic = store.group(targetId);
         const parentId = live?.parentId ?? gid;
         if (!topic || topic.parentId !== parentId) return fail(`「${targetId}」不是这个群的话题。这个群进行中的话题：${topicList()}`);
+        if (topic.closedAt) return fail("这个话题已经关闭。");
         try {
           const closed = runtime.groups.closeByOwner(topic.id, params.note);
           const message = `话题「${closed.name}」已关闭。`;

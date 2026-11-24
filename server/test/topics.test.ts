@@ -454,10 +454,11 @@ describe("close_topic：结论", () => {
 
       const closed = hob.runtime.groups.createTopic(group.id, "已经关闭", "user");
       hob.runtime.groups.closeByUser(closed.id, "之前已完成");
+      const before = hob.runtime.store.group(closed.id)!;
       const repeated = await toolOf(hob, "close_topic", group.id).execute("c", { topic: closed.id, note: "再次确认" });
-      expect(isError(repeated)).toBe(false);
-      expect((repeated as { terminate?: boolean }).terminate).not.toBe(true);
-      expect(hob.runtime.store.group(closed.id)?.closedAt).toBeTruthy();
+      expect(isError(repeated)).toBe(true);
+      expect(textOf(repeated)).toBe("这个话题已经关闭。");
+      expect(hob.runtime.store.group(closed.id)).toMatchObject({ closedAt: before.closedAt, closeNote: "之前已完成" });
     } finally { hob.close(); }
   });
 
